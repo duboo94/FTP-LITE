@@ -2908,6 +2908,9 @@ class MachinePanel:
         self.stamp_lbl.config(text="마지막 갱신 " + time.strftime("%H:%M:%S"))
         self._update_count()
 
+    def _is_running(self, e):
+        return False
+
     def _tags(self, n, e):
         return (("dir",) if e.is_dir else ()) + (("alt",) if n % 2 else ())
 
