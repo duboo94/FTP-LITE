@@ -2732,6 +2732,7 @@ class MachinePanel:
         self.tw, self.key, self.num, self.name, self.site = tw, key, num, name, site
         self.title = name
         self.retry_s = retry_s
+        self._last_click = 0.0
         self.entries = []
         self.rows = {}
         self.cwd = tw.cwd_mem.get(name, "/")           # 숨겼다 다시 열어도 보던 폴더를 기억
