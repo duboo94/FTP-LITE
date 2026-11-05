@@ -3,7 +3,7 @@ FTP Lite - FANUC 장비 FTP 데이터 서버 파일 전송 (간단 버전)
 
 - 설비마다 FTP 로 접속해서 파일을 올리고 내려받는 창 하나만 있다 (모니터링 · 알람 · 휴대폰 연결 · 라이선스 없음)
 - 위쪽: 설비의 데이터 서버 (가로로 나란히)  /  아래쪽: 내 PC 폴더  /  끌어서 놓기로 전송
-- 시계 옆 트레이 아이콘 + 단축키(기본 Ctrl+Alt+F)로 보이기/숨기기, 전송이 끝나면 자동으로 숨김
+- 시계 옆 트레이 아이콘 + 단축키(기본 Alt+F)로 보이기/숨기기, 전송이 끝나면 자동으로 숨김
 - 설정 파일: %LOCALAPPDATA%\\FTP Lite\\Settings.json  (설비 목록 + 설정, 비밀번호는 암호화하지 않음)
 
 실행: 파일을 더블클릭 (.pyw 라서 콘솔 창 없이 실행, 표준 라이브러리만 사용)
@@ -904,6 +904,8 @@ class SiteManager(tk.Toplevel):
         self.reconnect_var = tk.StringVar(value=str(cfg_seconds(cfg, "reconnect_sec", DEFAULT_RECONNECT_SEC)))
         self.keepalive_var = tk.StringVar(value=str(cfg_seconds(cfg, "keepalive_sec", DEFAULT_KEEPALIVE_SEC)))
         self.tw_hotkey_var = tk.StringVar(value=tw_hotkey_cfg(cfg))
+        self.del_hotkey_var = tk.StringVar(value=del_hotkey_cfg(cfg))
+        self._cap_target = "tw"
         self.ncdata_var = tk.StringVar(value=str(pc_default_dir(cfg)))
         self.editor_var = tk.StringVar(value=str(cfg.get("editor_path", "") or ""))
         self.automin_var = tk.BooleanVar(value=bool(cfg.get("auto_min_done", True)))
@@ -942,7 +944,7 @@ class SiteManager(tk.Toplevel):
 
     def _snapshot(self):
         return json.dumps([[[e["name"], e["host"], e["user"], e["password"]] for e in self.entries],
-                           self.reconnect_var.get(), self.keepalive_var.get(), self.tw_hotkey_var.get(),
+                           self.reconnect_var.get(), self.keepalive_var.get(), self.tw_hotkey_var.get(), self.del_hotkey_var.get(),
                            self.ncdata_var.get(), self.editor_var.get(), self.automin_var.get(),
                            self.refresh_shown_var.get(), self.refresh_hidden_var.get(), self.autostart_var.get()],
                           ensure_ascii=False)
@@ -1066,8 +1068,11 @@ class SiteManager(tk.Toplevel):
         wrap, key = fsection(page, "단축키")
         wrap.pack(fill="x", pady=(10, 0))
         right = self._row(key, "보이기 / 숨기기", last=True)
-        self.tw_hk_btn = RoundButton(right, self.tw_hotkey_var.get(), self._start_capture, width=150)
+        self.tw_hk_btn = RoundButton(right, self.tw_hotkey_var.get(), lambda: self._start_capture("tw"), width=150)
         self.tw_hk_btn.pack()
+        right = self._row(key, "삭제 (파일 전송 창에서만)", last=True)
+        self.del_hk_btn = RoundButton(right, self.del_hotkey_var.get(), lambda: self._start_capture("del"), width=150)
+        self.del_hk_btn.pack()
 
         if sys.platform == "win32":
             wrap, boot = fsection(page, "시작")
@@ -1081,18 +1086,26 @@ class SiteManager(tk.Toplevel):
         tk.Label(right, text="정성철 · sc9727@naver.com", font=ui_font(9), bg=C_CARD, fg=C_SUB).pack()
 
     # ---- 단축키 입력 ----
-    def _start_capture(self):
+    def _start_capture(self, which="tw"):
+        if self._capturing:
+            self._end_capture()
         self._capturing = True
-        self.tw_hk_btn.config(text="키를 누르세요…")
+        self._cap_target = which
+        (self.tw_hk_btn if which == "tw" else self.del_hk_btn).config(text="키를 누르세요…")
         self.focus_set()
 
     def _end_capture(self, text=None):
         if not self._capturing:
             return
         self._capturing = False
+        var, btn = (self.tw_hotkey_var, self.tw_hk_btn) if self._cap_target == "tw" else (self.del_hotkey_var, self.del_hk_btn)
+        other = self.del_hotkey_var if self._cap_target == "tw" else self.tw_hotkey_var
+        if text and text.lower() == other.get().lower():
+            messagebox.showinfo("단축키", "숨기기 단축키와 삭제 단축키가 같을 수 없습니다.", parent=self)
+            text = None
         if text:
-            self.tw_hotkey_var.set(text)
-        self.tw_hk_btn.config(text=self.tw_hotkey_var.get())
+            var.set(text)
+        btn.config(text=var.get())
 
     def _on_key(self, e):
         if not self._capturing:
@@ -1204,6 +1217,7 @@ class SiteManager(tk.Toplevel):
         cfg["reconnect_sec"] = cfg_seconds({"v": self.reconnect_var.get()}, "v", DEFAULT_RECONNECT_SEC)
         cfg["keepalive_sec"] = cfg_seconds({"v": self.keepalive_var.get()}, "v", DEFAULT_KEEPALIVE_SEC)
         cfg["tw_hotkey"] = self.tw_hotkey_var.get()
+        cfg["del_hotkey"] = self.del_hotkey_var.get()
         cfg["pc_dir"] = self.ncdata_var.get().strip()
         cfg["editor_path"] = self.editor_var.get().strip()
         cfg["auto_min_done"] = bool(self.automin_var.get())
@@ -1542,6 +1556,7 @@ if IS_WINDOWS:
     _MOD_ALT, _MOD_CONTROL, _MOD_NOREPEAT = 0x0001, 0x0002, 0x4000
     _HOTKEY_ID = 1
 _HOTKEY_ID2 = 2
+_HOTKEY_ID3 = 3
 
 
 def single_instance(name="FtpLite_SingleInstance"):
@@ -1671,12 +1686,13 @@ class TrayIcon:
 
     MENU_TOGGLE, MENU_TOPMOST, MENU_FIX, MENU_SETTINGS, MENU_QUIT, MENU_TRANSFER = 1, 2, 4, 3, 9, 5
 
-    def __init__(self, events, tip, states, hotkey=DEFAULT_HOTKEY, hotkey2=None):
+    def __init__(self, events, tip, states, hotkey=DEFAULT_HOTKEY, hotkey2=None, hotkey3=None):
         self.events = events                 # queue.Queue: "toggle", "topmost", "settings", "quit", ("error", msg)
         self.tip = tip
         self.states = states                 # 메뉴 체크 표시용: () -> (항상 위, 고정)
         self.hotkey = hotkey
         self.hotkey2 = hotkey2               # 파일 전송 창 단축키 (없으면 등록 안 함)
+        self.hotkey3 = hotkey3               # 삭제 단축키
         self.hwnd = None
         self._ready = threading.Event()
         self._thread = threading.Thread(target=self._run, name="tray", daemon=True)
@@ -1697,7 +1713,7 @@ class TrayIcon:
             _user32.PostMessageW(self.hwnd, _WM_SETKEY, 0, 0)       # 등록은 창을 만든 스레드에서 해야 한다
 
     def _register_hotkey(self):
-        for hid, text in ((_HOTKEY_ID, self.hotkey), (_HOTKEY_ID2, self.hotkey2)):
+        for hid, text in ((_HOTKEY_ID, self.hotkey), (_HOTKEY_ID2, self.hotkey2), (_HOTKEY_ID3, self.hotkey3)):
             _user32.UnregisterHotKey(self.hwnd, hid)
             if not text:
                 continue
@@ -1705,6 +1721,11 @@ class TrayIcon:
             if not p or not _user32.RegisterHotKey(self.hwnd, hid, p[0] | _MOD_NOREPEAT, p[1]):
                 self.events.put(("error", f"{text} 단축키를 등록하지 못했습니다.\n"
                                           "다른 프로그램이 이미 쓰고 있을 수 있습니다. 설정에서 다른 키를 고르세요."))
+
+    def set_hotkey3(self, text):
+        self.hotkey3 = text
+        if self.hwnd:
+            _user32.PostMessageW(self.hwnd, _WM_SETKEY, 0, 0)
 
     def set_hotkey2(self, text):
         self.hotkey2 = text
@@ -1759,8 +1780,8 @@ class TrayIcon:
         if msg == _WM_SETKEY:
             self._register_hotkey()
             return 0
-        if msg == _WM_HOTKEY and wparam in (_HOTKEY_ID, _HOTKEY_ID2):
-            self.events.put("toggle" if wparam == _HOTKEY_ID else "transfer")
+        if msg == _WM_HOTKEY and wparam in (_HOTKEY_ID, _HOTKEY_ID2, _HOTKEY_ID3):
+            self.events.put({_HOTKEY_ID: "toggle", _HOTKEY_ID2: "transfer", _HOTKEY_ID3: "delete"}[wparam])
             return 0
         if msg == _WM_SHOW:                     # 프로그램을 한 번 더 실행하면 기존 창을 보여준다
             self.events.put("show")
@@ -1772,6 +1793,7 @@ class TrayIcon:
             _shell32.Shell_NotifyIconW(_NIM_DELETE, ctypes.byref(self._nid(0)))
             _user32.UnregisterHotKey(hwnd, _HOTKEY_ID)
             _user32.UnregisterHotKey(hwnd, _HOTKEY_ID2)
+            _user32.UnregisterHotKey(hwnd, _HOTKEY_ID3)
             _user32.DestroyWindow(hwnd)
             return 0
         if msg == _WM_DESTROY:
@@ -1880,10 +1902,11 @@ def cfg_seconds(cfg, key, default, low=1, high=3600):
 # 파일 전송 창 (M-Link 와 같은 구성)
 #   위쪽 : 설비들의 FTP 데이터 서버 (가로로 나란히)
 #   아래쪽: 내 PC (왼쪽 폴더 트리 + 오른쪽 폴더 목록), 전송 기록은 중간
-#   제목표시줄·작업표시줄 없음, 트레이 메뉴 / 단축키(기본 Ctrl+Alt+F)로 보이기·숨기기
+#   제목표시줄·작업표시줄 없음, 트레이 메뉴 / 단축키(기본 Alt+F)로 보이기·숨기기
 #   숨기면 장비와의 FTP 연결을 끊고, 다시 보이면 연결한다.
 # ==========================================================================
-DEFAULT_TW_HOTKEY = "Ctrl+Alt+F"
+DEFAULT_TW_HOTKEY = "Alt+F"
+DEFAULT_DEL_HOTKEY = "Alt+G"
 
 # M-Link 테마표 (라이트) - 글자 크기 9pt / 이름 10pt 굵게 / 갱신 시각 8pt, 모서리 패널 8px · 버튼·입력칸 6px
 ML_LIGHT = dict(bg="#eef1f5", panel="#ffffff", panel2="#f5f7fa", panel3="#e9edf3", line="#dde3ea", line2="#c5cedb",
@@ -1917,6 +1940,11 @@ def work_area(win):
         except Exception:
             pass
     return [0, 0, win.winfo_screenwidth(), win.winfo_screenheight()]
+
+
+def del_hotkey_cfg(cfg):
+    h = str(cfg.get("del_hotkey", DEFAULT_DEL_HOTKEY))
+    return h if parse_hotkey(h) else DEFAULT_DEL_HOTKEY
 
 
 def tw_hotkey_cfg(cfg):
@@ -3436,6 +3464,12 @@ class TransferWindow(tk.Toplevel):
         IconBtn(tb, "sun" if DARK_MODE[0] else "moon", lambda: self.monitor.set_dark(not DARK_MODE[0]),
                 bg=ML["panel3"]).pack(side="right")
         IconBtn(tb, "gear", self.open_settings, bg=ML["panel3"]).pack(side="right", padx=(0, 10))
+        self.del_srv_var = tk.BooleanVar(value=bool(self.cfg().get("del_srv_on", False)))
+        self.del_pc_var = tk.BooleanVar(value=bool(self.cfg().get("del_pc_on", False)))
+        for var, txt in ((self.del_pc_var, "PC 삭제"), (self.del_srv_var, "서버 삭제")):
+            pill = PillToggle(tb, txt, var, self._save_del_flags)
+            pill.config(bg=ML["panel3"])
+            pill.pack(side="right", padx=(0, 8))
         for w_ in (tb, t1):
             w_.bind("<ButtonPress-1>", self._move_start)
             w_.bind("<B1-Motion>", self._move)
@@ -3482,6 +3516,8 @@ class TransferWindow(tk.Toplevel):
         self.bind("<F2>", lambda _e: self._key("rename"))
         self.bind("<Delete>", lambda _e: self._key("delete"))
         self.bind("<F5>", lambda _e: self._key("refresh"))
+        self._del_seqs = []
+        self.bind_del_key()
         self.bind("<Control-a>", self._select_all)
         self.bind("<Control-A>", self._select_all)
         self.protocol("WM_DELETE_WINDOW", self.monitor.quit_app)          # Alt+F4 / 닫기 요청 = 프로그램 종료
@@ -3645,6 +3681,42 @@ class TransferWindow(tk.Toplevel):
             self._log_lines -= 1
         self.logbox.see("end")
         self.logbox.config(state="disabled")
+
+    def bind_del_key(self):
+        """삭제 단축키: 이 창이 보이고 키 입력을 받는 동안에만 동작한다 (숨겨져 있으면 아무 일도 없음)."""
+        for q in self._del_seqs:
+            self.unbind(q)
+        self._del_seqs = []
+        seq = hotkey_tk_sequence(self.monitor.del_hotkey)
+        if not seq:
+            return
+        for q in {seq, seq[:-2] + seq[-2].upper() + ">" if len(seq) > 3 and seq[-2].isalpha() else seq}:
+            self.bind(q, self._del_key_event)
+            self._del_seqs.append(q)
+
+    def _del_key_event(self, _e=None):
+        if self.winfo_viewable():
+            self.delete_checked()
+        return "break"
+
+    def _save_del_flags(self):
+        cfg = self.cfg()
+        cfg["del_srv_on"] = bool(self.del_srv_var.get())
+        cfg["del_pc_on"] = bool(self.del_pc_var.get())
+        save_app_cfg(cfg)
+
+    def delete_checked(self):
+        """삭제 단축키: 체크된 쪽(데이터 서버 / 내 PC)의 현재 폴더 파일을 전부 지운다."""
+        srv, pc = self.del_srv_var.get(), self.del_pc_var.get()
+        if not (srv or pc):
+            self.say("삭제 체크가 모두 꺼져 있어서 지우지 않았습니다")
+            return
+        self.log("삭제", "단축키: " + " · ".join(n for n, f in (("데이터 서버", srv), ("내 PC", pc)) if f) + " 전체 삭제")
+        if srv:
+            for p in self.panels.values():
+                p.clear_all()
+        if pc:
+            self.pc.clear_all()
 
     def say(self, text):
         self.status.config(text=text)
@@ -4084,7 +4156,13 @@ class LiteApp(tk.Tk):
         self.withdraw()
         self.app_cfg = load_app_cfg()
         apply_theme(bool(self.app_cfg.get("dark")))
+        if not self.app_cfg.get("mig_altf"):             # 예전 기본값(Ctrl+Alt+F)을 쓰던 경우 새 기본값(Alt+F)으로 한 번만 바꾼다
+            if self.app_cfg.get("tw_hotkey") == "Ctrl+Alt+F":
+                self.app_cfg["tw_hotkey"] = "Alt+F"
+            self.app_cfg["mig_altf"] = True
+            save_app_cfg(self.app_cfg)
         self.tw_hotkey = tw_hotkey_cfg(self.app_cfg)
+        self.del_hotkey = del_hotkey_cfg(self.app_cfg)
         self.tw = None                      # 파일 전송 창
         self.settings_win = None
         self._first_run_pending = FIRST_RUN          # 설정 파일이 없는 첫 실행
@@ -4129,6 +4207,11 @@ class LiteApp(tk.Tk):
         self._fallback_seq = hotkey_tk_sequence(self.tw_hotkey)
         if self._fallback_seq:
             self.bind_all(self._fallback_seq, lambda _e: self.toggle_transfer())
+
+    def set_del_hotkey(self, text):
+        self.del_hotkey = text                 # 삭제 단축키는 파일 전송 창이 보일 때 창 안에서만 동작한다
+        if self.tw is not None:
+            self.tw.bind_del_key()
 
     def set_tw_hotkey(self, text):
         self.tw_hotkey = text
@@ -4221,6 +4304,8 @@ class LiteApp(tk.Tk):
         self.app_cfg = load_app_cfg()          # 설정 창에서 바꾼 값을 다시 읽는다
         if tw_hotkey_cfg(self.app_cfg) != self.tw_hotkey:
             self.set_tw_hotkey(tw_hotkey_cfg(self.app_cfg))
+        if del_hotkey_cfg(self.app_cfg) != self.del_hotkey:
+            self.set_del_hotkey(del_hotkey_cfg(self.app_cfg))
         if self.tw is not None:
             self.tw.on_settings()
         if first:                                # 첫 설정을 마치면 그때 파일 전송 창을 보여 준다
@@ -4249,5 +4334,5 @@ if __name__ == "__main__":
     elif not show_running_instance():
         _root = tk.Tk()
         _root.withdraw()
-        messagebox.showinfo("FTP Lite", "이미 실행 중입니다.\n트레이 아이콘을 누르거나 설정한 단축키(기본 Ctrl+Alt+F)로 창을 불러오세요.")
+        messagebox.showinfo("FTP Lite", "이미 실행 중입니다.\n트레이 아이콘을 누르거나 설정한 단축키(기본 Alt+F)로 창을 불러오세요.")
         _root.destroy()
