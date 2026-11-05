@@ -2090,6 +2090,7 @@ class FtpSession(threading.Thread):
     # ---- 스레드 본체
     def run(self):
         ftp = None
+        fails = 0
         while not self.halt.is_set():
             if ftp is None:
                 self.post("state", ("connecting", "", 0))
@@ -2104,6 +2105,7 @@ class FtpSession(threading.Thread):
                             pass
                     self._list(ftp)
                     self._pasv_ok = True
+                    fails = 0
                 except (*all_errors, UnicodeError) as e:
                     if ftp is not None and not self._pasv_ok:
                         self.pasv = not self.pasv
@@ -2111,8 +2113,9 @@ class FtpSession(threading.Thread):
                     if self.halt.is_set():
                         break
                     self.post("state", ("off", ftp_error_text(e), 0))
-                    self._drain()
-                    self.halt.wait(self.retry_s)
+                    self._drain(ftp_error_text(e))
+                    fails += 1
+                    self.halt.wait(2 if fails <= 3 else self.retry_s)      # 처음 몇 번은 2초 뒤 바로 다시 시도
                     continue
             try:
                 cmd = self.cmds.get(timeout=self.keepalive_s)
@@ -2133,10 +2136,13 @@ class FtpSession(threading.Thread):
                 self.post("error", (cmd[0], f"내부 오류: {e!r}"))
         self._drop(ftp)
 
-    def _drain(self):
+    def _drain(self, why=""):
+        """접속 실패로 쌓여 있던 명령을 버린다. 전송 명령이었으면 실패로 알려서 화면이 '작업 중'에 멈추지 않게 한다."""
         try:
             while True:
-                self.cmds.get_nowait()
+                cmd = self.cmds.get_nowait()
+                if cmd and cmd[0] not in ("list", "noop"):
+                    self.post("error", (cmd[0], why or "접속하지 못해 전송하지 못했습니다"))
         except queue.Empty:
             pass
 
@@ -2831,6 +2837,7 @@ class MachinePanel:
         self.session = FtpSession(self.key, self.site["host"], self.site["user"], self.site["password"],
                                   self.tw.events, retry_s=self.retry_s, start_cwd=self.cwd)
         self.session.start()
+        self._state("connecting")
 
     def disconnect(self):
         if self.session is not None:
@@ -2839,8 +2846,8 @@ class MachinePanel:
         self._state("off", "")
 
     def _send(self, *cmd):
-        if self.session is not None and self.state == "on":
-            self.session.submit(*cmd)
+        if self.session is not None and self.state in ("on", "connecting"):
+            self.session.submit(*cmd)              # 접속 중이면 접속이 끝나는 대로 실행된다
             return True
         self.tw.say(f"{self.name}: 접속돼 있지 않습니다")
         return False
@@ -2908,7 +2915,7 @@ class MachinePanel:
             self.meta_lbl.config(text=self.site["host"])
         else:
             deny = msg.startswith("로그인 실패")
-            self.status_lbl.config(text=("로그인 실패" if deny else (f"꺼짐 · {self.retry_s}초 뒤 다시" if msg else "꺼짐")))
+            self.status_lbl.config(text=("로그인 실패" if deny else ("꺼짐 · 다시 접속 중" if msg else "꺼짐")))
             self.meta_lbl.config(text=self.site["host"])
             if msg:
                 self.tw.log(self.name, msg, error=True)
