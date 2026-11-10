@@ -3439,13 +3439,13 @@ class PcPanel:
         paths = [Path(p) for p in paths if Path(p).is_file() and Path(p).parent != dest]
         if not paths:
             return
-        clash = [p for p in paths if (dest / p.name).exists()]
-        if clash and not _ask_overwrite(self.tw, "복사", [p.name for p in clash]):
+        clash = [p for p in paths if (dest / norm_prog_name(p.name)).exists()]       # o4 -> O0004 로 맞춰 넣는다
+        if clash and not _ask_overwrite(self.tw, "복사", [norm_prog_name(p.name) for p in clash]):
             paths = [p for p in paths if p not in clash]
         ok = 0
         for p in paths:
             try:
-                shutil.copy2(p, dest / p.name)
+                shutil.copy2(p, dest / norm_prog_name(p.name))
                 ok += 1
             except OSError as e:
                 self.tw.log(self.title, f"{p.name}: 복사하지 못했습니다 ({e.strerror or e})", error=True)
