@@ -906,6 +906,7 @@ class SiteManager(tk.Toplevel):
         self.tw_hotkey_var = tk.StringVar(value=tw_hotkey_cfg(cfg))
         self.del_hotkey_var = tk.StringVar(value=del_hotkey_cfg(cfg))
         self._cap_target = "tw"
+        self.folder_rows = []             # 폴더 패널 설정 줄: {"frame","name","path"}
         self.ncdata_var = tk.StringVar(value=str(pc_default_dir(cfg)))
         self.editor_var = tk.StringVar(value=str(cfg.get("editor_path", "") or ""))
         self.automin_var = tk.BooleanVar(value=bool(cfg.get("auto_min_done", True)))
@@ -946,7 +947,8 @@ class SiteManager(tk.Toplevel):
         return json.dumps([[[e["name"], e["host"], e["user"], e["password"]] for e in self.entries],
                            self.reconnect_var.get(), self.keepalive_var.get(), self.tw_hotkey_var.get(), self.del_hotkey_var.get(),
                            self.ncdata_var.get(), self.editor_var.get(), self.automin_var.get(),
-                           self.refresh_shown_var.get(), self.refresh_hidden_var.get(), self.autostart_var.get()],
+                           self.refresh_shown_var.get(), self.refresh_hidden_var.get(), self.autostart_var.get(),
+                           [[r["name"].get(), r["path"].get()] for r in self.folder_rows]],
                           ensure_ascii=False)
 
     # ---- UI ----
@@ -1041,6 +1043,17 @@ class SiteManager(tk.Toplevel):
         field_entry(right, self.ncdata_var, width=22).pack(side="right", padx=(0, 8), ipady=4)
         right = self._row(ftp, "전송이 모두 성공하면 창 자동 최소화", last=True)
         Switch(right, self.automin_var).pack()
+
+        wrap, fol = fsection(page, "폴더 패널  (설비처럼 따로 열어 두는 내 PC 폴더)")
+        wrap.pack(fill="x", pady=(10, 0))
+        tk.Label(fol, text="파일을 끌어다 놓아 넣고, Del 키나 빗자루로 지울 수 있습니다. 적용하면 설비 오른쪽에 나타납니다.",
+                 font=ui_font(8), bg=C_CARD, fg=C_HINT, anchor="w", justify="left", wraplength=620).pack(anchor="w", pady=(0, 6))
+        self.folder_box = tk.Frame(fol, bg=C_CARD)
+        self.folder_box.pack(fill="x")
+        RoundButton(fol, "＋ 폴더 추가", lambda: self._add_folder_row(), width=110, height=32).pack(anchor="w", pady=(8, 0))
+        for f in (load_app_cfg().get("folders") or []):
+            if isinstance(f, dict):
+                self._add_folder_row(str(f.get("name", "")), str(f.get("path", "")))
 
         wrap, conn = fsection(page, "연결  (모든 설비 공통)")
         wrap.pack(fill="x", pady=(10, 0))
@@ -1216,6 +1229,8 @@ class SiteManager(tk.Toplevel):
         cfg = load_app_cfg()
         cfg["reconnect_sec"] = cfg_seconds({"v": self.reconnect_var.get()}, "v", DEFAULT_RECONNECT_SEC)
         cfg["keepalive_sec"] = cfg_seconds({"v": self.keepalive_var.get()}, "v", DEFAULT_KEEPALIVE_SEC)
+        cfg["folders"] = [{"name": r["name"].get().strip(), "path": r["path"].get().strip()}
+                          for r in self.folder_rows if r["path"].get().strip()]
         cfg["tw_hotkey"] = self.tw_hotkey_var.get()
         cfg["del_hotkey"] = self.del_hotkey_var.get()
         cfg["pc_dir"] = self.ncdata_var.get().strip()
@@ -1291,6 +1306,28 @@ class SiteManager(tk.Toplevel):
         if not last:
             tk.Frame(parent, height=1, bg=C_LINE).pack(fill="x")
         return right
+
+    def _add_folder_row(self, name="", path=""):
+        row = {"frame": tk.Frame(self.folder_box, bg=C_CARD), "name": tk.StringVar(value=name), "path": tk.StringVar(value=path)}
+        f = row["frame"]
+        f.pack(fill="x", pady=3)
+        RoundButton(f, "삭제", lambda r=row: self._del_folder_row(r), kind="danger", width=60, height=30).pack(side="right")
+        RoundButton(f, "찾기", lambda r=row: self._pick_folder(r), width=60, height=30).pack(side="right", padx=(0, 6))
+        field_entry(f, row["path"], width=24).pack(side="right", padx=(0, 6), ipady=4)
+        field_entry(f, row["name"], width=10).pack(side="left", padx=(0, 6), ipady=4)
+        self.folder_rows.append(row)
+
+    def _del_folder_row(self, row):
+        row["frame"].destroy()
+        if row in self.folder_rows:
+            self.folder_rows.remove(row)
+
+    def _pick_folder(self, row):
+        d = filedialog.askdirectory(parent=self, title="폴더 패널로 열 폴더 선택", initialdir=row["path"].get() or None)
+        if d:
+            row["path"].set(os.path.normpath(d))
+            if not row["name"].get().strip():
+                row["name"].set(Path(d).name or d)
 
     def _pick_pc(self):
         d = filedialog.askdirectory(parent=self, title="내 PC 기본 폴더 선택", initialdir=self.ncdata_var.get() or None)
@@ -1882,7 +1919,7 @@ def autostart_set(on):
         pass
 
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 
 
 # --------------------------------------------------------------------------
@@ -3010,7 +3047,8 @@ class MachinePanel:
         if ask and clash and not _ask_overwrite(self.tw, "올리기", [p.name for p in clash]):
             paths = [p for p in paths if p not in clash]
         self._del_after = set()
-        if paths and getattr(self.tw, "relay", None) is None and self.tw.pc.del_var.get():
+        if paths and getattr(self.tw, "relay", None) is None and self.tw.pc.del_var.get() \
+                and all(p.parent == self.tw.pc.cwd for p in paths):
             self._del_after = {str(p) for p in paths}          # '전송 시 삭제' 체크: 올라간 파일은 내 PC 에서 지움
         if paths and self._send("upload", paths):
             self.busy = True
@@ -3101,8 +3139,10 @@ def pc_places(cfg):
 class PcPanel:
     title = "내 PC"
 
-    def __init__(self, inner, tw, start):
+    def __init__(self, inner, tw, start, title="내 PC", is_folder=False):
         self.tw = tw
+        self.title = title
+        self.is_folder = is_folder
         self.root = inner
         self.base = Path(start)
         self.cwd = Path(start)
@@ -3112,7 +3152,7 @@ class PcPanel:
 
         hd = tk.Frame(inner, bg=ML["panel"])
         hd.pack(fill="x", padx=8, pady=6)
-        self.title_lbl = _ml_label(hd, "내 PC", F_NAME, True)
+        self.title_lbl = _ml_label(hd, title, F_NAME, True)
         self.title_lbl.pack(side="left")
         self.path_lbl = _ml_label(hd, str(self.cwd), F_BASE, False, ML["muted"])      # 화면에는 표시하지 않음
         self.target = 0                                  # 숫자키로 고른 전송 대상 장비 번호 (0 = 없음)
@@ -3120,9 +3160,10 @@ class PcPanel:
         self.target_lbl.pack(side="left", padx=(10, 0))
         self.broom_btn = IconBtn(hd, "broom", self.clear_all, bg=ML["panel"], size=26)
         self.broom_btn.pack(side="right")
-        self.del_var = tk.BooleanVar(value=bool(tw.cfg().get("del_after_send", False)))
+        self.del_var = tk.BooleanVar(value=(not is_folder) and bool(tw.cfg().get("del_after_send", False)))
         self.del_pill = PillToggle(hd, "전송 후 삭제", self.del_var, self._save_del)
-        self.del_pill.pack(side="right", padx=(0, 8))
+        if not is_folder:                                  # 폴더 패널에는 '전송 후 삭제' 가 없다
+            self.del_pill.pack(side="right", padx=(0, 8))
         _ml_line(inner).pack(fill="x")
         _ml_line(inner).pack(side="bottom", fill="x")
         ft = tk.Frame(inner, bg=ML["panel"])
@@ -3185,7 +3226,7 @@ class PcPanel:
             return
         self.cwd = path
         cfg = self.tw.cfg()
-        if cfg.get("pc_last") != str(path):                # 마지막으로 본 폴더를 기억 (다음 실행 때 거기서 시작)
+        if not self.is_folder and cfg.get("pc_last") != str(path):                # 마지막으로 본 폴더를 기억 (다음 실행 때 거기서 시작)
             cfg["pc_last"] = str(path)
             save_app_cfg(cfg)
         self.path_lbl.config(text=str(path))
@@ -3291,10 +3332,10 @@ class PcPanel:
         try:
             items = list(self.cwd.iterdir())
         except OSError as e:
-            self.tw.say(f"내 PC: 폴더를 읽지 못했습니다 ({e.strerror or e})")
+            self.tw.say(f"{self.title}: 폴더를 읽지 못했습니다 ({e.strerror or e})")
             return
         if any(i.is_dir() for i in items):
-            self.tw.say("내 PC: 폴더가 있어서 전체 삭제를 하지 않습니다")
+            self.tw.say(f"{self.title}: 폴더가 있어서 전체 삭제를 하지 않습니다")
             return
         ok = 0
         for f in items:
@@ -3302,8 +3343,8 @@ class PcPanel:
                 os.remove(f)
                 ok += 1
             except OSError as e:
-                self.tw.log("내 PC", f"{f.name}: 지우지 못했습니다 ({e.strerror or e})", error=True)
-        self.tw.log("내 PC", f"전체 삭제 {ok}개 완료")
+                self.tw.log(self.title, f"{f.name}: 지우지 못했습니다 ({e.strerror or e})", error=True)
+        self.tw.log(self.title, f"전체 삭제 {ok}개 완료")
         self.refresh()
 
     def _show_target(self):
@@ -3360,9 +3401,9 @@ class PcPanel:
             if (self.cwd / new).exists():
                 raise OSError("같은 이름이 이미 있습니다")
             os.rename(self.cwd / old, self.cwd / new)
-            self.tw.log("내 PC", f"{old} → {new} 이름 바꿈")
+            self.tw.log(self.title, f"{old} → {new} 이름 바꿈")
         except OSError as e:
-            self.tw.log("내 PC", f"이름을 바꾸지 못했습니다: {e.strerror or e}", error=True)
+            self.tw.log(self.title, f"이름을 바꾸지 못했습니다: {e.strerror or e}", error=True)
             new = old
         self.refresh(select=new)
         self.list.focus_set()                            # 바로 Enter 로 전송할 수 있게
@@ -3388,8 +3429,8 @@ class PcPanel:
                 os.remove(self.cwd / name)
                 ok += 1
             except OSError as e:
-                self.tw.log("내 PC", f"{name}: 지우지 못했습니다 ({e.strerror or e})", error=True)
-        self.tw.log("내 PC", f"삭제 {ok}개 완료")
+                self.tw.log(self.title, f"{name}: 지우지 못했습니다 ({e.strerror or e})", error=True)
+        self.tw.log(self.title, f"삭제 {ok}개 완료")
         self.refresh()
 
     def copy_in(self, paths, dest):
@@ -3407,8 +3448,8 @@ class PcPanel:
                 shutil.copy2(p, dest / p.name)
                 ok += 1
             except OSError as e:
-                self.tw.log("내 PC", f"{p.name}: 복사하지 못했습니다 ({e.strerror or e})", error=True)
-        self.tw.log("내 PC", f"복사 {ok}개 완료 → {dest.name or dest}")
+                self.tw.log(self.title, f"{p.name}: 복사하지 못했습니다 ({e.strerror or e})", error=True)
+        self.tw.log(self.title, f"복사 {ok}개 완료 → {dest.name or dest}")
         self.refresh()
 
 
@@ -3510,6 +3551,7 @@ class TransferWindow(tk.Toplevel):
         bottom = tk.Frame(self.split, bg=ML["bg"])
         card = MPanel(bottom)
         card.pack(fill="both", expand=True, pady=(4, 0))
+        self.folders = []                          # 설정에서 추가한 폴더 패널
         self.pc = PcPanel(card.inner, self, self._pc_initial())
         self.pc.base = self._pc_start()
         self.split.add(self.top, minsize=180, stretch="always")
@@ -3766,7 +3808,7 @@ class TransferWindow(tk.Toplevel):
     # ---- 목록 선택 / 끌어놓기 / 키 처리
     def all_owners(self):
         pc = getattr(self, "pc", None)
-        return [*self.panels.values(), *([pc] if pc is not None else [])]
+        return [*self.panels.values(), *([pc] if pc is not None else []), *getattr(self, "folders", [])]
 
     def attach(self, owner, tree, root):
         self._roots[str(root)] = owner
@@ -4014,8 +4056,17 @@ class TransferWindow(tk.Toplevel):
         if r:
             shutil.rmtree(r["dir"], ignore_errors=True)
 
+    def _folder_defs(self):
+        out = []
+        for f in (self.cfg().get("folders") or []):
+            if isinstance(f, dict) and str(f.get("path", "")).strip():
+                path = str(f["path"]).strip()
+                out.append((str(f.get("name") or "").strip() or (Path(path).name or path), path))
+        return out
+
     def rebuild(self):
         devices = [(n, s) for n, s in load_sites().items() if s.get("host") and s.get("ftp")]
+        fdefs = self._folder_defs()
         retry = cfg_seconds(self.cfg(), "reconnect_sec", DEFAULT_RECONNECT_SEC)
         old = {p.name: p for p in self.panels.values()}
         keep = {}
@@ -4024,6 +4075,8 @@ class TransferWindow(tk.Toplevel):
             if op is not None and (op.site.get("host"), op.site.get("user"), op.site.get("password")) == \
                     (st.get("host"), st.get("user"), st.get("password")):
                 keep[n] = op
+        oldf = {(p.title, str(p.base)): p for p in self.folders}
+        fkeep = {d: oldf[d] for d in fdefs if d in oldf}
         for n, op in old.items():
             if keep.get(n) is not op:
                 op.disconnect()
@@ -4031,13 +4084,15 @@ class TransferWindow(tk.Toplevel):
         pc = getattr(self, "pc", None)
         self._roots = {str(pc.root): pc} if pc is not None else {}
         self.active = None
+        kept_cards = [op.card for op in keep.values()] + [fp.card for fp in fkeep.values()]
         for w_ in self.top.winfo_children():
-            if not any(w_ is op.card for op in keep.values()):
+            if not any(w_ is c for c in kept_cards):
                 w_.destroy()
         self.panels = {}
+        total = len(devices) + len(fdefs)
         for c in range(16):                              # 이전에 잡아 둔 칸 설정을 지운다 (남으면 한쪽만 차지)
             self.top.columnconfigure(c, weight=0, uniform="", minsize=0)
-        if not devices:
+        if total == 0:
             self.top.columnconfigure(0, weight=1, uniform="")
             msg = MPanel(self.top)
             msg.grid(row=0, column=0, sticky="nsew")
@@ -4056,6 +4111,23 @@ class TransferWindow(tk.Toplevel):
                 self._roots[str(panel.card)] = panel
             panel.card.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 4, 0))
             self.panels[i] = panel
+        self.folders = []
+        for j, d in enumerate(fdefs):                    # 폴더 패널: 설비 패널 오른쪽에 같은 폭으로
+            col = len(devices) + j
+            self.top.columnconfigure(col, weight=1, uniform="m")
+            fp = fkeep.get(d)
+            if fp is None:
+                try:
+                    Path(d[1]).mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    pass
+                card = MPanel(self.top)
+                fp = PcPanel(card.inner, self, Path(d[1]), title=d[0], is_folder=True)
+                fp.card = card
+            else:
+                self._roots[str(fp.root)] = fp
+            fp.card.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 4, 0))
+            self.folders.append(fp)
         self._dirty = False
         if getattr(self, "pc", None) is not None:
             self.pc._show_target()
@@ -4073,6 +4145,8 @@ class TransferWindow(tk.Toplevel):
         self.after(150, self.sync_topmost)
         self.focus_force()
         self.pc.refresh()
+        for f in self.folders:
+            f.refresh()
         for p in self.panels.values():
             p.connect()
 
@@ -4134,6 +4208,8 @@ class TransferWindow(tk.Toplevel):
                 self._t_pc = now
                 if self._edit is None:
                     self.pc.poll()
+                    for f in self.folders:
+                        f.poll()
             if now - self._t_run > self.refresh_shown():
                 self._t_run = now
                 for p in self.panels.values():
@@ -4142,6 +4218,8 @@ class TransferWindow(tk.Toplevel):
             self._t_pc = now
             if self._edit is None:
                 self.pc.poll()
+                for f in self.folders:
+                    f.poll()
         self._tick_id = self.after(150, self._tick)
 
 
