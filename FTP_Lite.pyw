@@ -910,6 +910,7 @@ class SiteManager(tk.Toplevel):
         self.ncdata_var = tk.StringVar(value=str(pc_default_dir(cfg)))
         self.editor_var = tk.StringVar(value=str(cfg.get("editor_path", "") or ""))
         self.automin_var = tk.BooleanVar(value=bool(cfg.get("auto_min_done", True)))
+        self.keepconn_var = tk.BooleanVar(value=bool(cfg.get("keep_conn", True)))
         self.refresh_shown_var = tk.StringVar(value=str(cfg_seconds(cfg, "refresh_shown_sec", 1)))
         self.refresh_hidden_var = tk.StringVar(value=str(cfg_seconds(cfg, "refresh_hidden_sec", 30)))
         self.autostart_var = tk.BooleanVar(value=autostart_get())
@@ -946,7 +947,7 @@ class SiteManager(tk.Toplevel):
     def _snapshot(self):
         return json.dumps([[[e["name"], e["host"], e["user"], e["password"]] for e in self.entries],
                            self.reconnect_var.get(), self.keepalive_var.get(), self.tw_hotkey_var.get(), self.del_hotkey_var.get(),
-                           self.ncdata_var.get(), self.editor_var.get(), self.automin_var.get(),
+                           self.ncdata_var.get(), self.editor_var.get(), self.automin_var.get(), self.keepconn_var.get(),
                            self.refresh_shown_var.get(), self.refresh_hidden_var.get(), self.autostart_var.get(),
                            [[r["name"].get(), r["path"].get()] for r in self.folder_rows]],
                           ensure_ascii=False)
@@ -1041,8 +1042,10 @@ class SiteManager(tk.Toplevel):
         right = self._row(ftp, "내 PC 기본 폴더")
         RoundButton(right, "찾기", self._pick_pc, width=70).pack(side="right")
         field_entry(right, self.ncdata_var, width=22).pack(side="right", padx=(0, 8), ipady=4)
-        right = self._row(ftp, "전송이 모두 성공하면 창 자동 최소화", last=True)
+        right = self._row(ftp, "전송이 모두 성공하면 창 자동 최소화")
         Switch(right, self.automin_var).pack()
+        right = self._row(ftp, "창을 숨겨도 설비 연결 유지", "켜면 다시 열 때 접속을 기다리지 않습니다", last=True)
+        Switch(right, self.keepconn_var).pack()
 
         wrap, fol = fsection(page, "폴더 패널  (설비처럼 따로 열어 두는 내 PC 폴더)")
         wrap.pack(fill="x", pady=(10, 0))
@@ -1236,6 +1239,7 @@ class SiteManager(tk.Toplevel):
         cfg["pc_dir"] = self.ncdata_var.get().strip()
         cfg["editor_path"] = self.editor_var.get().strip()
         cfg["auto_min_done"] = bool(self.automin_var.get())
+        cfg["keep_conn"] = bool(self.keepconn_var.get())
         cfg["refresh_shown_sec"] = cfg_seconds({"v": self.refresh_shown_var.get()}, "v", 1)
         cfg["refresh_hidden_sec"] = cfg_seconds({"v": self.refresh_hidden_var.get()}, "v", 30)
         sites = {e["name"]: {"host": e["host"], "user": e["user"], "password": e["password"], "ftp": True}
@@ -3804,6 +3808,9 @@ class TransferWindow(tk.Toplevel):
             self.rebuild()
             for p in self.panels.values():
                 p.connect()
+        elif not bool(self.cfg().get("keep_conn", True)):        # 숨겨진 채로 '연결 유지'를 끄면 남은 연결을 끊는다
+            for p in self.panels.values():
+                p.disconnect()
 
     # ---- 목록 선택 / 끌어놓기 / 키 처리
     def all_owners(self):
@@ -4148,7 +4155,10 @@ class TransferWindow(tk.Toplevel):
         for f in self.folders:
             f.refresh()
         for p in self.panels.values():
+            had = p.session is not None             # 숨기는 동안 연결을 유지했으면 다시 접속하지 않고 목록만 새로 읽는다
             p.connect()
+            if had:
+                p.refresh()
 
     def auto_min_soon(self):
         """전송이 끝나고 실패가 없으면 잠깐 뒤 창을 숨긴다 (설정에서 끌 수 있음)."""
@@ -4167,8 +4177,9 @@ class TransferWindow(tk.Toplevel):
             return
         self._end_edit()
         self._save_geo()
-        for p in self.panels.values():
-            p.disconnect()
+        if not bool(self.cfg().get("keep_conn", True)):      # 기본: 숨겨도 설비 연결을 유지 (다시 열 때 바로 전송)
+            for p in self.panels.values():
+                p.disconnect()
         self.withdraw()
 
     def toggle(self):
@@ -4214,7 +4225,7 @@ class TransferWindow(tk.Toplevel):
                 self._t_run = now
                 for p in self.panels.values():
                     p.auto_refresh()
-        elif now - self._t_pc > self.refresh_hidden():       # 숨겨진 동안에는 30초마다 (내 PC 목록만. 장비 연결은 끊겨 있음)
+        elif now - self._t_pc > self.refresh_hidden():       # 숨겨진 동안에는 30초마다 (내 PC 목록만. 설비 연결은 설정에 따라 유지)
             self._t_pc = now
             if self._edit is None:
                 self.pc.poll()
