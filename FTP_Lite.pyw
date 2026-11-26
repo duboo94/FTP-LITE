@@ -911,6 +911,7 @@ class SiteManager(tk.Toplevel):
         self.editor_var = tk.StringVar(value=str(cfg.get("editor_path", "") or ""))
         self.automin_var = tk.BooleanVar(value=bool(cfg.get("auto_min_done", True)))
         self.keepconn_var = tk.BooleanVar(value=bool(cfg.get("keep_conn", True)))
+        self.autonum_var = tk.BooleanVar(value=bool(cfg.get("auto_number", True)))
         self.refresh_shown_var = tk.StringVar(value=str(cfg_seconds(cfg, "refresh_shown_sec", 1)))
         self.refresh_hidden_var = tk.StringVar(value=str(cfg_seconds(cfg, "refresh_hidden_sec", 30)))
         self.autostart_var = tk.BooleanVar(value=autostart_get())
@@ -947,7 +948,7 @@ class SiteManager(tk.Toplevel):
     def _snapshot(self):
         return json.dumps([[[e["name"], e["host"], e["user"], e["password"]] for e in self.entries],
                            self.reconnect_var.get(), self.keepalive_var.get(), self.tw_hotkey_var.get(), self.del_hotkey_var.get(),
-                           self.ncdata_var.get(), self.editor_var.get(), self.automin_var.get(), self.keepconn_var.get(),
+                           self.ncdata_var.get(), self.editor_var.get(), self.automin_var.get(), self.keepconn_var.get(), self.autonum_var.get(),
                            self.refresh_shown_var.get(), self.refresh_hidden_var.get(), self.autostart_var.get(),
                            [[r["name"].get(), r["path"].get()] for r in self.folder_rows]],
                           ensure_ascii=False)
@@ -1044,8 +1045,10 @@ class SiteManager(tk.Toplevel):
         field_entry(right, self.ncdata_var, width=22).pack(side="right", padx=(0, 8), ipady=4)
         right = self._row(ftp, "전송이 모두 성공하면 창 자동 최소화")
         Switch(right, self.automin_var).pack()
-        right = self._row(ftp, "창을 숨겨도 설비 연결 유지", "켜면 다시 열 때 접속을 기다리지 않습니다", last=True)
+        right = self._row(ftp, "창을 숨겨도 설비 연결 유지", "켜면 다시 열 때 접속을 기다리지 않습니다")
         Switch(right, self.keepconn_var).pack()
+        right = self._row(ftp, "번호 아닌 파일명은 다음 번호로 올리기", "o1·o0005 같은 이름이 아니면 서버의 마지막 번호 다음(O0008)으로 저장", last=True)
+        Switch(right, self.autonum_var).pack()
 
         wrap, fol = fsection(page, "폴더 패널  (설비처럼 따로 열어 두는 내 PC 폴더)")
         wrap.pack(fill="x", pady=(10, 0))
@@ -1240,6 +1243,7 @@ class SiteManager(tk.Toplevel):
         cfg["editor_path"] = self.editor_var.get().strip()
         cfg["auto_min_done"] = bool(self.automin_var.get())
         cfg["keep_conn"] = bool(self.keepconn_var.get())
+        cfg["auto_number"] = bool(self.autonum_var.get())
         cfg["refresh_shown_sec"] = cfg_seconds({"v": self.refresh_shown_var.get()}, "v", 1)
         cfg["refresh_hidden_sec"] = cfg_seconds({"v": self.refresh_hidden_var.get()}, "v", 30)
         sites = {e["name"]: {"host": e["host"], "user": e["user"], "password": e["password"], "ftp": True}
@@ -2233,7 +2237,7 @@ class FtpSession(threading.Thread):
             ftp.cwd(cmd[1])
             self._list(ftp)
         elif op == "upload":
-            self._upload(ftp, cmd[1])
+            self._upload(ftp, cmd[1], bool(cmd[2]) if len(cmd) > 2 else False)
         elif op == "download":
             self._download(ftp, cmd[1], cmd[2])
         elif op == "delete":
@@ -2249,10 +2253,43 @@ class FtpSession(threading.Thread):
             last[0] = now
             self.post("progress", (label, done, total, idx, count))
 
-    def _upload(self, ftp, paths):
+    def _auto_names(self, ftp, paths):
+        """O숫자 이름이 아닌 파일은, 이 폴더(데이터 서버)의 마지막 O번호 다음 번호(O0008 …)로 이름을 정한다."""
+        lines = []
+        try:
+            ftp.retrlines("LIST", lines.append)
+        except all_errors:
+            pass
+        mx, used = 0, set()
+        for ln in lines:
+            e = parse_list_line(ln)
+            m = PROG_NAME_RE.fullmatch(e.name) if e and not e.is_dir else None
+            if m:
+                mx = max(mx, int(m.group(1)))
+                used.add(int(m.group(1)))
+        for p in paths:                                       # 같이 올리는 O번호 파일의 번호는 건너뛴다 (겹침 방지)
+            m = PROG_NAME_RE.fullmatch(Path(p).name)
+            if m:
+                used.add(int(m.group(1)))
+        names = {}
+        for p in paths:
+            p = Path(p)
+            if is_prog_name(p.name):
+                names[str(p)] = norm_prog_name(p.name)
+            else:                                             # 서버의 마지막 번호 다음부터 빈 번호를 차례로
+                mx += 1
+                while mx in used:
+                    mx += 1
+                used.add(mx)
+                names[str(p)] = f"O{mx:04d}"
+        return names
+
+    def _upload(self, ftp, paths, auto_num=False):
         ok = bad = 0
+        dests = self._auto_names(ftp, paths) if auto_num else {}
         for i, path in enumerate(paths, 1):
             path = Path(path)
+            dest = dests.get(str(path)) or norm_prog_name(path.name)
             try:
                 total = path.stat().st_size
                 sent = [0]
@@ -2261,10 +2298,10 @@ class FtpSession(threading.Thread):
                     sent[0] += len(block)
                     self._progress(_name, sent[0], total, _i, len(paths))
                 with open(path, "rb") as f:
-                    ftp.storbinary("STOR " + norm_prog_name(path.name), f, 8192, cb)
+                    ftp.storbinary("STOR " + dest, f, 8192, cb)
                 ok += 1
                 self.post("uploaded", str(path))
-                self.post("log", f"{path.name} 올리기 완료")
+                self.post("log", f"{path.name} 올리기 완료" if dest == path.name else f"{path.name} → {dest} 올리기 완료")
             except OSError as e:
                 if isinstance(e, (ConnectionError, socket.timeout)) or getattr(e, "errno", None) in (10054, 10053, 104, 32):
                     raise
@@ -2273,7 +2310,7 @@ class FtpSession(threading.Thread):
             except (error_perm, error_temp) as e:
                 bad += 1
                 try:
-                    ftp.delete(norm_prog_name(path.name))                # 끊긴 올리기의 반쪽 파일은 장비에서 지운다
+                    ftp.delete(dest)                # 끊긴 올리기의 반쪽 파일은 장비에서 지운다
                 except all_errors:
                     pass
                 self.post("error", ("upload", f"{path.name}: {ftp_error_text(e)}"))
@@ -2725,6 +2762,14 @@ def ml_styles(root):
         ("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
 
 
+PROG_NAME_RE = re.compile(r"[oO](\d{1,5})(\..*)?")
+
+
+def is_prog_name(name):
+    """O숫자 형식(o1, o0005, O12.tap …)인 프로그램 이름인가."""
+    return PROG_NAME_RE.fullmatch(name) is not None
+
+
 def norm_prog_name(name):
     """o12 -> O0012, o2.tap -> O0002.tap. 숫자가 5자리 이상(O00000~)이면 그대로 둔다."""
     m = re.fullmatch(r"[oO](\d{1,4})(\..*)?", name)
@@ -3047,14 +3092,15 @@ class MachinePanel:
             self.tw.say("올릴 파일이 없습니다 (폴더는 올리지 않습니다)")
             return
         exist = {e.name.casefold() for e in self.entries}
-        clash = [p for p in paths if norm_prog_name(p.name).casefold() in exist]
+        auto = bool(self.tw.cfg().get("auto_number", True))
+        clash = [p for p in paths if (is_prog_name(p.name) or not auto) and norm_prog_name(p.name).casefold() in exist]
         if ask and clash and not _ask_overwrite(self.tw, "올리기", [p.name for p in clash]):
             paths = [p for p in paths if p not in clash]
         self._del_after = set()
         if paths and getattr(self.tw, "relay", None) is None and self.tw.pc.del_var.get() \
                 and all(p.parent == self.tw.pc.cwd for p in paths):
             self._del_after = {str(p) for p in paths}          # '전송 시 삭제' 체크: 올라간 파일은 내 PC 에서 지움
-        if paths and self._send("upload", paths):
+        if paths and self._send("upload", paths, auto):
             self.busy = True
             self.tw.log(self.name, f"{len(paths)}개 올리는 중…")
 
